@@ -8,7 +8,7 @@ import {
   withSqliteWriteAdmissionService,
 } from "../../infra/sqlite-transaction.js";
 
-const COMMIT_DECISION_TIMEOUT_MS = 5_000;
+const COMMIT_BARRIER_BUSY_TIMEOUT_MS = 5_000;
 const WAITING = 0;
 const APPROVED = 1;
 const REJECTED = 2;
@@ -80,7 +80,13 @@ export function waitForSqliteReclamationCommit(
   const shared = new Int32Array(buffer);
   Atomics.store(shared, 0, REQUESTED);
   request();
-  Atomics.wait(shared, 0, REQUESTED, COMMIT_DECISION_TIMEOUT_MS);
+  // The parent owns the only valid commit decision and may be synchronously
+  // validating a cold database when this request arrives. A wall-clock timeout
+  // cannot distinguish that live owner from a dead one and previously turned a
+  // 5001ms validation into a rejected reclamation. Parent/process termination
+  // tears down this Worker and SQLite rolls the transaction back; an explicit
+  // refusal also changes the gate and wakes this wait.
+  Atomics.wait(shared, 0, REQUESTED);
   if (Atomics.compareExchange(shared, 0, APPROVED, COMMITTING) !== APPROVED) {
     rejectCommit(shared);
     throw new Error("SQLite session reclamation commit was not authorized");
@@ -110,7 +116,7 @@ function authorizeSqliteReclamationCommit(
   let settled = false;
   try {
     database = openNodeSqliteDatabase(databasePath);
-    setSqliteBusyTimeout(database, COMMIT_DECISION_TIMEOUT_MS);
+    setSqliteBusyTimeout(database, COMMIT_BARRIER_BUSY_TIMEOUT_MS);
     assertCurrent();
     if (Atomics.compareExchange(shared, 0, REQUESTED, APPROVED) !== REQUESTED) {
       throw new Error("SQLite session reclamation commit checkpoint expired");
