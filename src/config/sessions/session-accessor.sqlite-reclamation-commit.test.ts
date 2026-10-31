@@ -166,18 +166,21 @@ test("rolls back when the live authority rejects the prepared deletion", async (
   }
 });
 
-test("cannot revive a commit checkpoint after its decision deadline", async () => {
+test("keeps a live commit checkpoint pending across slow parent validation", async () => {
   const fixture = createCommitFixture();
   try {
     await fixture.requested;
-    await fixture.exited;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5_100);
+    });
     await fixture.withAuthorization(
       () => {},
       async (authorize) => {
-        expect(authorize).toThrow("checkpoint expired");
+        expect(authorize()).toEqual([]);
       },
     );
-    expect(fixture.value()).toBe(1);
+    await fixture.exited;
+    expect(fixture.value()).toBe(2);
   } finally {
     await fixture.close();
   }
